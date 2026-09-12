@@ -1,4 +1,5 @@
-"""JADI GR-Solana memecoin intelligence bot (single-file, GitHub Actions edition)
+"""
+JADI GR — Solana memecoin intelligence bot (single-file, GitHub Actions edition)
 
 This is the whole bot in one file, on purpose: it's meant to be pasted into
 a GitHub repo from a phone, then run on a schedule by GitHub Actions
@@ -271,10 +272,19 @@ def dex_normalize_pair(pair: dict) -> dict:
     }
 
 
+PUMPFUN_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                  "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Accept": "application/json",
+    "Referer": "https://pump.fun/",
+    "Origin": "https://pump.fun",
+}
+
+
 async def pumpfun_get_new_mints(limit=100) -> list:
     url = f"{PUMPFUN_FRONTEND_API}/coins"
     params = {"offset": 0, "limit": limit, "sort": "created_timestamp", "order": "DESC"}
-    async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
+    async with httpx.AsyncClient(timeout=HTTP_TIMEOUT, headers=PUMPFUN_HEADERS) as client:
         resp = await client.get(url, params=params)
         resp.raise_for_status()
         return resp.json() or []
@@ -305,7 +315,7 @@ async def pumpfun_candidates_by_stage() -> dict:
 
 async def pumpfun_get_trades(mint_address: str, limit=200) -> list:
     url = f"{PUMPFUN_FRONTEND_API}/trades/all/{mint_address}"
-    async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
+    async with httpx.AsyncClient(timeout=HTTP_TIMEOUT, headers=PUMPFUN_HEADERS) as client:
         resp = await client.get(url, params={"limit": limit, "offset": 0})
         if resp.status_code == 404:
             return []
@@ -728,12 +738,34 @@ def format_watchlist(rows):
 
 # ============================== BOT LOGIC ====================================
 
+async def safe_answer(query, *args, **kwargs):
+    """
+    Button taps get processed minutes after the user tapped them (since this
+    runs on a schedule, not continuously). Telegram often rejects the
+    acknowledgement by then ("query is too old"). That must never stop the
+    actual action (refresh, mark taken, etc.) from running.
+    """
+    try:
+        await query.answer(*args, **kwargs)
+    except Exception:
+        logger.info("Could not answer callback query (likely expired) - continuing anyway")
+
+
+async def safe_edit(query, text, **kwargs):
+    """Telegram errors if the new text is byte-identical to the old message - harmless, ignore it."""
+    try:
+        await query.edit_message_text(text, **kwargs)
+    except Exception as e:
+        if "not modified" not in str(e).lower():
+            logger.exception("Failed to edit message")
+
+
 async def handle_update(bot: Bot, update: Update):
     if update.message and update.message.text in ("/start", "/menu"):
         await bot.send_message(chat_id=update.message.chat_id,
                                 text="🧠 *JADI GR* — Solana memecoin intelligence assistant\n\n"
                                      "Scanning New Pairs, Nearly Graduated, and Migrated tokens every run. "
-                                     "This bot checks in every ~15 minutes (free hosting), so button presses "
+                                     "This bot checks in periodically (free hosting), so button presses "
                                      "aren't instant, but everything else works the same.",
                                 reply_markup=main_menu_keyboard(), parse_mode=ParseMode.MARKDOWN)
         return
@@ -761,32 +793,32 @@ async def handle_update(bot: Bot, update: Update):
             text = (f"No {section.replace('_',' ')} tokens scored yet." if not rows else
                     f"*{section.replace('_',' ').title()}*\n\n" + "\n".join(
                         f"{r['symbol']} — {r['overall_score']}/100 `{r['address']}`" for r in rows))
-        await query.answer()
-        await query.edit_message_text(text, reply_markup=main_menu_keyboard(), parse_mode=ParseMode.MARKDOWN)
+        await safe_answer(query)
+        await safe_edit(query, text, reply_markup=main_menu_keyboard(), parse_mode=ParseMode.MARKDOWN)
 
     elif data.startswith("refresh:"):
         _, token_address, alert_id = data.split(":")
-        await query.answer("Refreshing...")
+        await safe_answer(query, "Refreshing...")
         with get_conn() as conn:
             row = conn.execute("SELECT category FROM tokens WHERE address=?", (token_address,)).fetchone()
         category = row["category"] if row else "new_pair"
         pair, score = await analyze_token(token_address, category)
         if not pair:
-            await query.answer("Couldn't refresh - no live pair data.", show_alert=True)
+            await safe_answer(query, "Couldn't refresh - no live pair data.", show_alert=True)
             return
-        await query.edit_message_text(format_alert(pair, score, category),
-                                       reply_markup=alert_keyboard(token_address, int(alert_id)),
-                                       parse_mode=ParseMode.MARKDOWN)
+        await safe_edit(query, format_alert(pair, score, category),
+                         reply_markup=alert_keyboard(token_address, int(alert_id)),
+                         parse_mode=ParseMode.MARKDOWN)
 
     elif data.startswith(("taken:", "ignored:")):
         action, alert_id = data.split(":")
         set_alert_status(int(alert_id), "taken" if action == "taken" else "ignored")
-        await query.answer(f"Marked as {action}")
+        await safe_answer(query, f"Marked as {action}")
 
     elif data.startswith("watch:"):
         token_address = data.split(":", 1)[1]
         add_to_watchlist(token_address)
-        await query.answer("Added to watchlist ⭐")
+        await safe_answer(query, "Added to watchlist ⭐")
 
 
 async def send_alert(bot: Bot, token_address, category, pair, score):
