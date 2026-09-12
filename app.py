@@ -1,4 +1,4 @@
-JADI GR — Solana memecoin intelligence bot (single-file, GitHub Actions edition)
+"""JADI GR-Solana memecoin intelligence bot (single-file, GitHub Actions edition)
 
 This is the whole bot in one file, on purpose: it's meant to be pasted into
 a GitHub repo from a phone, then run on a schedule by GitHub Actions
