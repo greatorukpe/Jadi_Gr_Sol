@@ -48,6 +48,7 @@ DB_PATH = os.getenv("JADI_DB_PATH", "jadi_gr.sqlite3")
 MIN_LIQUIDITY_USD = float(os.getenv("MIN_LIQUIDITY_USD", "2000"))
 FAST_ALERT_SCORE = int(os.getenv("FAST_ALERT_SCORE", "80"))
 REGULAR_ALERT_SCORE = int(os.getenv("REGULAR_ALERT_SCORE", "60"))
+BATCH_DISPLAY_LIMIT = int(os.getenv("BATCH_DISPLAY_LIMIT", "15"))  # max shown per batch message
 
 HAS_TWITTER_API = bool(TWITTER_BEARER_TOKEN)
 HTTP_TIMEOUT = 15.0
@@ -689,6 +690,48 @@ def main_menu_keyboard():
     ])
 
 
+def generate_thesis(pair: dict, score: dict, category: str) -> str:
+    """
+    A short, human-readable case for the token, built only from signals
+    already computed above - never invented. This is a read of current
+    on-chain data, not a prediction; it's flagged as such at the end.
+    """
+    parts = []
+    symbol = pair.get("symbol", "This token")
+    volume, mc = pair.get("volume_24h") or 0, pair.get("mc") or 0
+
+    if score["market_score"] >= 70:
+        ratio_note = f" (volume is {volume/mc:.1f}x its market cap)" if mc else ""
+        parts.append(f"{symbol} is showing strong buy pressure and real trading volume{ratio_note}, "
+                      f"not just a stagnant listing.")
+    elif score["market_score"] >= 50:
+        parts.append(f"{symbol}'s market activity is moderate — buys outweigh sells, but volume isn't heavy yet.")
+    else:
+        parts.append(f"{symbol}'s market activity is thin right now, which limits the case for it.")
+
+    if score.get("trusted_buyer_count"):
+        parts.append(f"{score['trusted_buyer_count']} wallet(s) with a track record JADI GR has seen before "
+                      f"bought in early — a real signal, not just volume.")
+    elif score.get("early_buyer_count"):
+        parts.append("There's early-buyer data, but none of those wallets are flagged as previously "
+                      "trusted yet, so treat that part as unproven.")
+
+    if score["safety_score"] >= 70:
+        parts.append("Safety checks are clean — key authorities revoked, liquidity locked, no alarming "
+                      "holder concentration — which lowers (not eliminates) rug risk.")
+    elif score["safety_score"] < 40:
+        parts.append("Safety is the weak point here and is the main thing holding back a higher rating.")
+
+    if category == "nearly_graduated":
+        parts.append("It's close to graduating off the bonding curve, which often brings a fresh wave of "
+                      "attention and liquidity once it migrates.")
+    elif category == "migrated":
+        parts.append("It's already migrated, so this case rests on sustained momentum, not a graduation pump.")
+
+    parts.append("This is a read of current signals, not a guarantee — momentum can reverse in minutes.")
+    return " ".join(parts)
+
+
 def format_alert(pair, score, category):
     alert_type = alert_type_for_score(score["overall_score"])
     header = "⚡ FAST ALERT" if alert_type == "fast" else "📊 REGULAR ALERT"
@@ -698,6 +741,8 @@ def format_alert(pair, score, category):
         f"`{pair.get('token_address', '')}`", "",
         f"Opportunity: *{score['opportunity_level']}*  ({score['overall_score']}/100)",
         f"Market {score['market_score']} | Safety {score['safety_score']} | Social {score['social_score']} | Smart-Money {score['smart_money_score']}",
+        "",
+        f"🧠 *Thesis*: {generate_thesis(pair, score, category)}",
         "",
         f"💰 MC: {_fmt_usd(pair.get('mc'))}   💧 Liq: {_fmt_usd(pair.get('liquidity'))}   📈 Vol24h: {_fmt_usd(pair.get('volume_24h'))}",
         f"⏱️ Age: {(pair.get('pair_age_minutes') or 0):.0f}m   🟢 Buys(5m): {pair.get('buys_5m', 0)}  🔴 Sells(5m): {pair.get('sells_5m', 0)}",
@@ -840,6 +885,49 @@ async def send_alert(bot: Bot, token_address, category, pair, score):
                                         reply_markup=alert_keyboard(token_address, alert_id))
 
 
+def _thesis_snippet(pair, score, category) -> str:
+    full = generate_thesis(pair, score, category)
+    return full.split(". ")[0].rstrip(".") + "."
+
+
+async def send_batch_alert(bot: Bot, candidates: list):
+    """
+    Sends everything that cleared the bar in this scan pass, ranked
+    best-first, as full detail messages back-to-back - not a summary that
+    needs a tap to expand. Since button taps here take up to the scan
+    interval to process, requiring a tap just to see details would defeat
+    the whole point of batching.
+    """
+    candidates = sorted(candidates, key=lambda c: c["score"]["overall_score"], reverse=True)
+    shown, overflow = candidates[:BATCH_DISPLAY_LIMIT], candidates[BATCH_DISPLAY_LIMIT:]
+
+    await bot.send_message(
+        chat_id=TELEGRAM_CHAT_ID,
+        text=f"🔥 *{len(candidates)} opportunit{'y' if len(candidates)==1 else 'ies'} found this pass* "
+             f"— ranked best first:",
+        parse_mode=ParseMode.MARKDOWN,
+    )
+
+    for c in shown:
+        pair, score, category, mint = c["pair"], c["score"], c["category"], c["mint"]
+        alert_type = alert_type_for_score(score["overall_score"])
+        msg = await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=format_alert(pair, score, category),
+                                     parse_mode=ParseMode.MARKDOWN,
+                                     reply_markup=alert_keyboard(mint, 0))
+        alert_id = record_alert(mint, alert_type, msg.message_id)
+        await bot.edit_message_reply_markup(chat_id=TELEGRAM_CHAT_ID, message_id=msg.message_id,
+                                            reply_markup=alert_keyboard(mint, alert_id))
+        await asyncio.sleep(0.4)  # stay well under Telegram's rate limit
+
+    if overflow:
+        for c in overflow:
+            record_alert(c["mint"], alert_type_for_score(c["score"]["overall_score"]))
+        await bot.send_message(
+            chat_id=TELEGRAM_CHAT_ID,
+            text=f"+{len(overflow)} more cleared the bar this pass — check 🔥 Top Opportunities in the menu.",
+        )
+
+
 # ============================== SCANNER ======================================
 
 async def scan_once(bot: Bot):
@@ -849,6 +937,7 @@ async def scan_once(bot: Bot):
         logger.exception("Failed to fetch pump.fun candidates")
         return
 
+    qualifying = []
     for category, coins in buckets.items():
         for coin in coins:
             mint = coin.get("mint")
@@ -862,10 +951,13 @@ async def scan_once(bot: Bot):
             if not pair or (pair.get("liquidity") or 0) < MIN_LIQUIDITY_USD:
                 continue
             if score["overall_score"] >= REGULAR_ALERT_SCORE:
-                try:
-                    await send_alert(bot, mint, category, pair, score)
-                except Exception:
-                    logger.exception(f"Failed to send alert for {mint}")
+                qualifying.append({"mint": mint, "category": category, "pair": pair, "score": score})
+
+    if qualifying:
+        try:
+            await send_batch_alert(bot, qualifying)
+        except Exception:
+            logger.exception("Failed to send batch alert")
 
 
 # ============================== ENTRY POINT ==================================
