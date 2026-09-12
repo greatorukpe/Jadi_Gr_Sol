@@ -690,6 +690,42 @@ def main_menu_keyboard():
     ])
 
 
+THEME_KEYWORDS = [
+    (["dog", "doge", "inu", "shiba", "puppy"],
+     "part of the dog-coin lineage (Doge/Shiba-style) — a narrative that resurfaces reliably"),
+    (["cat", "kitty", "meow"],
+     "cat-meme themed, riding the same crowd that periodically makes cat coins pop"),
+    (["pepe", "frog", "froge"],
+     "in the Pepe/frog-meme lineage, one of crypto's most durable meme templates"),
+    (["trump", "biden", "maga", "potus", "elect"],
+     "politically themed, likely trying to catch attention tied to political news cycles"),
+    (["elon", "musk", "tesla", "spacex", "doge2"],
+     "Elon Musk-adjacent naming, banking on his outsized influence on meme coin attention"),
+    (["ai", "gpt", "robot", "agent"],
+     "AI-themed, riding the broader AI hype narrative"),
+    (["moon", "rocket", "lambo"],
+     "generic hype naming (moon/rocket-style) without a distinct theme of its own"),
+    (["baby", "mini", "junior", "2.0", "v2"],
+     "a \"spinoff\"-style name, likely trying to ride an existing bigger coin's momentum"),
+    (["chad", "wojak", "gigachad"],
+     "meme-template themed (wojak/chad-style internet culture)"),
+]
+
+
+def guess_theme(pair: dict) -> str:
+    """
+    A best-effort guess at what the coin is 'about,' from its name/symbol
+    alone - NOT researched, NOT confirmed by any social data (that needs a
+    paid X/Twitter API this bot doesn't have). Always labelled as a guess.
+    """
+    text = f"{pair.get('symbol','')} {pair.get('name','')}".lower()
+    for keywords, desc in THEME_KEYWORDS:
+        if any(k in text for k in keywords):
+            return desc
+    return ("no recognizable meme theme in its name — likely a generic or random name, so this reads "
+            "more as pure momentum/speculation than a themed narrative")
+
+
 def generate_thesis(pair: dict, score: dict, category: str) -> str:
     """
     A short, human-readable case for the token, built only from signals
@@ -700,21 +736,24 @@ def generate_thesis(pair: dict, score: dict, category: str) -> str:
     symbol = pair.get("symbol", "This token")
     volume, mc = pair.get("volume_24h") or 0, pair.get("mc") or 0
 
+    parts.append(f"{symbol} is {guess_theme(pair)} (name-based guess only, not confirmed by social data).")
+
     if score["market_score"] >= 70:
         ratio_note = f" (volume is {volume/mc:.1f}x its market cap)" if mc else ""
-        parts.append(f"{symbol} is showing strong buy pressure and real trading volume{ratio_note}, "
+        parts.append(f"What's pushing it right now looks like real buy pressure and trading volume{ratio_note}, "
                       f"not just a stagnant listing.")
     elif score["market_score"] >= 50:
-        parts.append(f"{symbol}'s market activity is moderate — buys outweigh sells, but volume isn't heavy yet.")
+        parts.append(f"Right now activity is moderate — buys outweigh sells, but volume isn't heavy yet, so "
+                      f"the 'why now' case is thinner.")
     else:
-        parts.append(f"{symbol}'s market activity is thin right now, which limits the case for it.")
+        parts.append(f"Activity is thin right now, so there isn't a strong 'why now' story yet beyond the listing itself.")
 
     if score.get("trusted_buyer_count"):
         parts.append(f"{score['trusted_buyer_count']} wallet(s) with a track record JADI GR has seen before "
-                      f"bought in early — a real signal, not just volume.")
+                      f"bought in early — a real driver, not just volume.")
     elif score.get("early_buyer_count"):
         parts.append("There's early-buyer data, but none of those wallets are flagged as previously "
-                      "trusted yet, so treat that part as unproven.")
+                      "trusted yet, so treat that driver as unproven.")
 
     if score["safety_score"] >= 70:
         parts.append("Safety checks are clean — key authorities revoked, liquidity locked, no alarming "
@@ -723,13 +762,30 @@ def generate_thesis(pair: dict, score: dict, category: str) -> str:
         parts.append("Safety is the weak point here and is the main thing holding back a higher rating.")
 
     if category == "nearly_graduated":
-        parts.append("It's close to graduating off the bonding curve, which often brings a fresh wave of "
-                      "attention and liquidity once it migrates.")
+        parts.append("It's close to graduating off the bonding curve right now, which often brings a fresh "
+                      "wave of attention and liquidity once it migrates — a concrete near-term catalyst.")
     elif category == "migrated":
         parts.append("It's already migrated, so this case rests on sustained momentum, not a graduation pump.")
+    else:
+        parts.append("It's brand new, so there's no graduation catalyst yet — the case rests purely on current momentum.")
 
-    parts.append("This is a read of current signals, not a guarantee — momentum can reverse in minutes.")
+    parts.append("This is a read of current signals, not a guarantee — momentum can reverse in minutes, "
+                  "and no percentage chance of hitting any target is offered here because none is backed by real data.")
     return " ".join(parts)
+
+
+def signal_strength_label(score: dict) -> str:
+    """
+    An honest qualitative label - NOT a probability of hitting any price
+    target. There's no historical outcome data yet to calibrate a real
+    percentage against, so none is faked here.
+    """
+    return {
+        "VERY_HIGH": "Very Strong — most signals align, but still not a prediction",
+        "HIGH": "Strong — several signals align",
+        "MEDIUM": "Mixed — some signals support it, others don't",
+        "LOW": "Weak — few signals support it right now",
+    }.get(score["opportunity_level"], "Unknown")
 
 
 def format_alert(pair, score, category):
@@ -741,6 +797,7 @@ def format_alert(pair, score, category):
         f"`{pair.get('token_address', '')}`", "",
         f"Opportunity: *{score['opportunity_level']}*  ({score['overall_score']}/100)",
         f"Market {score['market_score']} | Safety {score['safety_score']} | Social {score['social_score']} | Smart-Money {score['smart_money_score']}",
+        f"📶 Signal Strength (not a probability): {signal_strength_label(score)}",
         "",
         f"🧠 *Thesis*: {generate_thesis(pair, score, category)}",
         "",
