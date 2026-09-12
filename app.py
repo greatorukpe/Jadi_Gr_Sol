@@ -41,7 +41,7 @@ TWITTER_BEARER_TOKEN = os.getenv("TWITTER_BEARER_TOKEN", "")
 RUGCHECK_API_KEY = os.getenv("RUGCHECK_API_KEY", "")
 
 DEXSCREENER_BASE = "https://api.dexscreener.com"
-PUMPFUN_FRONTEND_API = "https://frontend-api.pump.fun"
+PUMPFUN_FRONTEND_API = "https://frontend-api-v3.pump.fun"
 RUGCHECK_BASE = "https://api.rugcheck.xyz/v1"
 
 DB_PATH = os.getenv("JADI_DB_PATH", "jadi_gr.sqlite3")
