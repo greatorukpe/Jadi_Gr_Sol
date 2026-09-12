@@ -324,14 +324,23 @@ async def pumpfun_get_trades(mint_address: str, limit=200) -> list:
 
 
 async def rugcheck_get_report(token_address: str):
+    """
+    Brand-new tokens (seconds old) often aren't indexed by RugCheck yet, and
+    return 400/404 rather than a report. That must not kill the whole
+    analysis for that token - treat it as "unknown risk" and continue
+    scoring with the data we do have, same as an early-buyer-data gap.
+    """
     url = f"{RUGCHECK_BASE}/tokens/{token_address}/report"
     headers = {"Authorization": f"Bearer {RUGCHECK_API_KEY}"} if RUGCHECK_API_KEY else {}
-    async with httpx.AsyncClient(timeout=HTTP_TIMEOUT, headers=headers) as client:
-        resp = await client.get(url)
-        if resp.status_code == 404:
-            return None
-        resp.raise_for_status()
-        return resp.json()
+    try:
+        async with httpx.AsyncClient(timeout=HTTP_TIMEOUT, headers=headers) as client:
+            resp = await client.get(url)
+            if resp.status_code != 200:
+                return None
+            return resp.json()
+    except Exception:
+        logger.info(f"RugCheck report unavailable for {token_address}")
+        return None
 
 
 def rugcheck_summarize(report):
